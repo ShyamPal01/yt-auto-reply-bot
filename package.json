@@ -1,0 +1,15 @@
+{
+  "name": "yt-auto-reply-bot",
+  "version": "1.0.0",
+  "description": "YouTube auto comment reply bot",
+  "main": "index.js",
+  "type": "module",
+  "dependencies": {
+    "express": "^5.0.0",
+    "googleapis": "^167.0.0",
+    "dotenv": "^17.2.0"
+  },
+  "scripts": {
+    "start": "node index.js"
+  }
+}
