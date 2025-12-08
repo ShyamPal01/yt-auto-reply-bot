@@ -1,19 +1,18 @@
-import express from "express";
-import { google } from "googleapis";
-import dotenv from "dotenv";
-
-dotenv.config();
+require("dotenv").config();
+const express = require("express");
+const { google } = require("googleapis");
+const { URLSearchParams } = require("url");
 
 const app = express();
-app.use(express.json());
+const PORT = process.env.PORT || 3000;
 
+// --- OAuth2 Client Setup (YouTube ke liye) ---
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
   process.env.GOOGLE_CLIENT_SECRET,
-  "http://localhost" // Deploy में change होगा
+  "http://localhost" // redirect yaha use nahi ho raha
 );
 
-// Set refresh token manually
 oauth2Client.setCredentials({
   refresh_token: process.env.YT_REFRESH_TOKEN,
 });
@@ -23,63 +22,182 @@ const youtube = google.youtube({
   auth: oauth2Client,
 });
 
-// --- SAMPLE PRODUCT LOGIC ---
-// (Later हम इसे Amazon/Flipkart API से connect करेंगे)
-function getBestProduct(budget) {
-  if (budget < 8000) return "Redmi A3 – Budget King";
-  if (budget < 12000) return "Realme Narzo N55 – Best under 12K";
-  if (budget < 20000) return "iQOO Z6 Lite – Best Performance under 20K";
-  return "Samsung M34 – Best Overall";
+// ---------------- HELPER FUNCTIONS ----------------
+
+// Comment se budget + requirement nikalna
+function extractBudgetAndNeed(text) {
+  if (!text) return null;
+
+  // Commas / ₹ / rs remove karke normalize
+  let normalized = text
+    .replace(/₹/g, " ")
+    .replace(/rs\.?/gi, " ")
+    .replace(/rupaye?/gi, " ")
+    .replace(/रुपये?/gi, " ")
+    .replace(/,/g, "");
+
+  // Number detect with optional "k / hazar"
+  const regex = /(\d+)(\s*(k|K|हज़ार|हजार))?/;
+  const match = normalized.match(regex);
+
+  if (!match) {
+    return null;
+  }
+
+  let numberPart = match[1];
+  let unit = match[3];
+
+  let budget = parseInt(numberPart, 10);
+  if (isNaN(budget)) return null;
+
+  if (unit && /k|K|हज़ार|हजार/.test(unit)) {
+    budget = budget * 1000;
+  }
+
+  // Requirement = original text se matched budget part hata ke
+  const need = text.replace(match[0], "").trim();
+
+  if (!need) {
+    // Agar kuch bhi requirement nahi bachi to skip
+    return null;
+  }
+
+  return {
+    need,
+    budget,
+  };
 }
 
-// --- AUTO REPLY FUNCTION ---
-async function replyToComment(commentId, replyText) {
-  await youtube.comments.insert({
+// Amazon affiliate search link banana
+function buildAmazonSearchLink(need, budget) {
+  const tag = process.env.AMAZON_TAG || "";
+  const base = "https://www.amazon.in/s";
+
+  const queryParts = [];
+  if (need) queryParts.push(need.trim());
+  if (budget) queryParts.push(`under ${budget} rupees`);
+
+  const search = queryParts.join(" ");
+
+  const params = new URLSearchParams();
+  if (search) params.set("k", search);
+  if (tag) params.set("tag", tag);
+
+  return `${base}?${params.toString()}`;
+}
+
+// Reply ka final text banana (Hinglish)
+function generateReplyText(need, budget, link) {
+  let budgetText = "aapke budget";
+  if (budget) {
+    budgetText = `approx ₹${budget.toLocaleString("en-IN")}`;
+  }
+
+  return (
+    `Aapki requirement: "${need}"\n` +
+    `Aur budget: ${budgetText} ke hisaab se,\n` +
+    `ye Amazon par best options ke liye search link hai:\n` +
+    `${link}\n\n` +
+    `Is link se aap direct products dekh sakte hain,\n` +
+    `latest price, offer aur reviews real-time check kar sakte hain. 🙂`
+  );
+}
+
+// New comments check + reply karna
+async function handleNewComments() {
+  // Latest comments read
+  const response = await youtube.commentThreads.list({
     part: ["snippet"],
-    requestBody: {
-      snippet: {
-        parentId: commentId,
-        textOriginal: replyText,
-      },
-    },
+    videoId: process.env.VIDEO_ID,
+    maxResults: 50,
+    order: "time",
   });
-}
 
-// --- MAIN COMMENT CHECKER ---
-app.get("/check-comments", async (req, res) => {
-  try {
-    const response = await youtube.commentThreads.list({
-      part: ["snippet"],
-      videoId: process.env.VIDEO_ID, // जिस वीडियो पर bot चलाना है
-      maxResults: 20,
-    });
+  const items = response.data.items || [];
+  const actions = [];
 
-    const comments = response.data.items;
+  for (const item of items) {
+    const snippet = item.snippet;
+    const topComment = snippet.topLevelComment;
 
-    for (let c of comments) {
-      const comment = c.snippet.topLevelComment.snippet.textDisplay;
+    if (!topComment) continue;
 
-      // Budget extract karna
-      const match = comment.match(/(\d{4,6})/);
-      if (!match) continue;
+    const commentId = topComment.id;
+    const textOriginal = topComment.snippet.textDisplay || "";
+    const totalReplyCount = snippet.totalReplyCount || 0;
 
-      const budget = parseInt(match[1]);
-
-      const product = getBestProduct(budget);
-
-      const replyMessage = `Aapke budget ₹${budget} me best option: ${product}\nAffiliate link: https://amzn.to/yourlink`;
-
-      await replyToComment(c.snippet.topLevelComment.id, replyMessage);
+    // Agar already reply ho chuka hai to skip
+    if (totalReplyCount > 0) {
+      continue;
     }
 
-    res.send("Auto-reply executed.");
+    // Comment se budget + need nikalna
+    const parsed = extractBudgetAndNeed(textOriginal);
+    if (!parsed) {
+      // Agar format samajh nahi aaya to filhaal skip
+      console.log("Skip (no budget/need found):", textOriginal);
+      continue;
+    }
+
+    const { need, budget } = parsed;
+
+    // Amazon affiliate search link
+    const affiliateLink = buildAmazonSearchLink(need, budget);
+
+    // Final reply text
+    const replyText = generateReplyText(need, budget, affiliateLink);
+
+    console.log("Replying to:", commentId, "->", replyText);
+
+    // YouTube pe reply bhejna
+    await youtube.comments.insert({
+      part: ["snippet"],
+      requestBody: {
+        snippet: {
+          parentId: commentId,
+          textOriginal: replyText,
+        },
+      },
+    });
+
+    actions.push({
+      commentId,
+      originalComment: textOriginal,
+      need,
+      budget,
+      affiliateLink,
+    });
+  }
+
+  return {
+    processedComments: actions.length,
+    replies: actions,
+  };
+}
+
+// ---------------- EXPRESS ROUTES ----------------
+
+app.get("/", (req, res) => {
+  res.send("YouTube Auto Reply Bot is running.");
+});
+
+// Cron-job.org ya manual hit ke liye endpoint
+app.get("/check-comments", async (req, res) => {
+  try {
+    const result = await handleNewComments();
+    res.json({
+      status: "ok",
+      ...result,
+    });
   } catch (err) {
-    console.error(err);
-    res.status(500).send("Error processing comments");
+    console.error("Error in /check-comments:", err);
+    res.status(500).json({
+      status: "error",
+      message: err.message,
+    });
   }
 });
 
-// Server start
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`BOT RUNNING on port ${PORT}…`));
-
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
