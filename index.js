@@ -1,10 +1,24 @@
-// Paste-only index.js (replace your current file)
+// Paste-only optimized index.js
+// Requirements:
+// - package.json must NOT have "type": "module"
+// - Set env vars on Render: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, YT_REFRESH_TOKEN, VIDEO_ID, AMAZON_TAG
+
 const express = require("express");
 const { google } = require("googleapis");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+const REQUIRED_ENVS = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "YT_REFRESH_TOKEN", "VIDEO_ID", "AMAZON_TAG"];
+
+// quick env check at startup
+const missingEnvs = REQUIRED_ENVS.filter(k => !process.env[k] || !String(process.env[k]).trim());
+if (missingEnvs.length > 0) {
+  console.error("Missing required environment variables:", missingEnvs.join(", "));
+  // still start server so you can see the message on Render logs, but mark unhealthy
+}
+
+// OAuth2 client (YouTube)
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
   process.env.GOOGLE_CLIENT_SECRET,
@@ -20,9 +34,12 @@ const youtube = google.youtube({
   auth: oauth2Client,
 });
 
-// --------- Utilities: parsing & link building ----------
+// ---------- Helpers ----------
 
-// Normalize whitespace and basic punctuation
+function escapeRegExp(string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function normalizeText(s) {
   return (s || "")
     .replace(/\s+/g, " ")
@@ -30,25 +47,31 @@ function normalizeText(s) {
     .trim();
 }
 
-// Try to find a budget number and its unit (k, hazar, thousand)
+// Extract ASIN from an Amazon URL or text containing an Amazon url
+function extractAsinFromUrl(str) {
+  if (!str) return null;
+  // patterns: /dp/ASIN or /gp/product/ASIN
+  const m = String(str).match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+  return m ? m[1] : null;
+}
+
+function unitMultiplier(unitToken) {
+  if (!unitToken) return 1;
+  const u = String(unitToken).toLowerCase();
+  if (u === "k" || u === "thousand" || u === "हज़ार" || u === "हज़ार") return 1000;
+  if (u === "lakh" || u === "lac" || u === "लाख") return 100000;
+  return 1;
+}
+
+// Try to find number with optional unit in text
 function parseNumberWithUnit(text) {
   if (!text) return null;
-
-  // Common patterns:
-  // 2500
-  // 2.5k / 2k / 2 K
-  // 2k ke under
-  // 2 hazar / 2हज़ार
-  // under 2500
-  // We'll search for number with optional decimal and optional unit nearby.
-
   const t = text;
 
-  // 1) look for explicit "under <number>" or "<number> ke under"
   const underRegexes = [
-    /\bunder\s+([0-9]+(?:\.[0-9]+)?)(\s*(k|K|thousand|हज़ार|हज़ार))?\b/i,
-    /\b([0-9]+(?:\.[0-9]+)?)(\s*(k|K|thousand|हज़ार|हज़ार))?\s+ke\s+under\b/i,
-    /\b([0-9]+(?:\.[0-9]+)?)(\s*(k|K|thousand|हज़ार|हज़ार))?\s+ke\b/i
+    /\bunder\s+([0-9]+(?:\.[0-9]+)?)(\s*(k|K|thousand|हज़ार|हज़ार|lakh|lac|लाख))?\b/i,
+    /\b([0-9]+(?:\.[0-9]+)?)(\s*(k|K|thousand|हज़ार|हज़ार|lakh|lac|लाख))?\s+ke\s+under\b/i,
+    /\b([0-9]+(?:\.[0-9]+)?)(\s*(k|K|thousand|हज़ार|हज़ार|lakh|lac|लाख))?\s+ke\b/i
   ];
   for (const rx of underRegexes) {
     const m = t.match(rx);
@@ -57,120 +80,108 @@ function parseNumberWithUnit(text) {
     }
   }
 
-  // 2) fallback: find the first standalone number (with optional unit)
-  const generic = /\b([0-9]+(?:\.[0-9]+)?)(\s*(k|K|thousand|हज़ार|हज़ार))?\b/;
+  const generic = /\b([0-9]+(?:\.[0-9]+)?)(\s*(k|K|thousand|हज़ार|हज़ार|lakh|lac|लाख))?\b/;
   const m2 = t.match(generic);
   if (m2) {
     return { rawMatch: m2[0], num: m2[1], unit: (m2[3] || "").toLowerCase(), multiplier: unitMultiplier(m2[3]) };
   }
-
   return null;
 }
 
-function unitMultiplier(unitToken) {
-  if (!unitToken) return 1;
-  const u = String(unitToken).toLowerCase();
-  if (u === "k" || u === "thousand" || u === "हज़ार" || u === "हज़ार") return 1000;
-  return 1;
-}
-
-// Main extractor: returns { need, budget } or null
 function extractBudgetAndNeed(originalText) {
   if (!originalText || typeof originalText !== "string") return null;
 
-  // Keep original for need extraction, but a normalized copy for number search
+  // If user pasted an Amazon product URL, try to get ASIN and treat as need = product
+  const asinMaybe = extractAsinFromUrl(originalText);
   const normalized = normalizeText(originalText);
 
   const parsed = parseNumberWithUnit(normalized);
-  if (!parsed) {
-    return null;
-  }
+  if (!parsed && !asinMaybe) return null;
 
-  let { rawMatch, num, multiplier } = parsed;
-
-  // Parse numeric value safely
-  let budget = Number(num);
-  if (isNaN(budget)) return null;
-
-  // If unit multiplier exists, only apply if the unit was explicitly present
-  // multiplier is already 1 or 1000
-  budget = Math.round(budget * multiplier);
-
-  // Remove only the exact matched substring from the original text to form the need.
-  // Use a case-insensitive removal of the first occurrence.
-  const re = new RegExp(escapeRegExp(rawMatch), "i");
-  let need = originalText.replace(re, "").trim();
-
-  // Additionally remove common filler words like "ke under", "under", "please", "bata do"
-  need = need
-    .replace(/\bke\s*under\b/gi, "")
-    .replace(/\bunder\b/gi, "")
-    .replace(/\bplease\b/gi, "")
-    .replace(/\bbata\s+do\b/gi, "")
-    .replace(/\bplease\b/gi, "")
-    .replace(/\bpl\b/gi, "")
-    .trim();
-
-  // If the extracted need is empty or too short, try to take nearby words around the match
-  if (!need || need.length < 2) {
-    // attempt to extract up to 4 words before or after the matched number
-    const windowRegex = new RegExp(`(?:\\b(?:[A-Za-z0-9अ-ह]+)\\b\\s*){0,4}${escapeRegExp(rawMatch)}(?:\\s*(?:\\b[A-Za-z0-9अ-ह]+\\b\\s*){0,6})`, "i");
-    const win = normalized.match(windowRegex);
-    if (win) {
-      let candidate = win[0].replace(new RegExp(escapeRegExp(rawMatch), "i"), "").trim();
-      candidate = candidate.replace(/\bke\b/gi, "").replace(/\bunder\b/gi, "").trim();
-      if (candidate && candidate.length > need.length) need = candidate;
+  let budget = null;
+  if (parsed) {
+    let { rawMatch, num, multiplier } = parsed;
+    let val = Number(num);
+    if (!isNaN(val)) {
+      budget = Math.round(val * (multiplier || 1));
     }
+    // remove the matched number phrase to form need
+    const re = new RegExp(escapeRegExp(rawMatch), "i");
+    let need = originalText.replace(re, "").trim();
+    need = need
+      .replace(/\bke\s*under\b/gi, "")
+      .replace(/\bunder\b/gi, "")
+      .replace(/\bplease\b/gi, "")
+      .replace(/\bbata\s+do\b/gi, "")
+      .replace(/\bpl\b/gi, "")
+      .trim();
+
+    // if too short, try window capture
+    if (!need || need.length < 2) {
+      const windowRegex = new RegExp(`(?:\\b(?:[A-Za-z0-9अ-ह]+)\\b\\s*){0,4}${escapeRegExp(parsed.rawMatch)}(?:\\s*(?:\\b[A-Za-z0-9अ-ह]+\\b\\s*){0,6})`, "i");
+      const win = normalized.match(windowRegex);
+      if (win) {
+        let candidate = win[0].replace(new RegExp(escapeRegExp(parsed.rawMatch), "i"), "").trim();
+        candidate = candidate.replace(/\bke\b/gi, "").replace(/\bunder\b/gi, "").trim();
+        if (candidate && candidate.length > need.length) need = candidate;
+      }
+    }
+
+    need = need.replace(/\s+/g, " ").trim();
+    if (!need && asinMaybe) need = `product ${asinMaybe}`;
+    if (!need) return null;
+    return { need, budget, asin: asinMaybe || null };
+  } else {
+    // no budget but ASIN present -> user pasted a product url like "check this: https://.../dp/ASIN"
+    const need = asinMaybe ? `product ${asinMaybe}` : null;
+    return { need, budget: null, asin: asinMaybe || null };
+  }
+}
+
+// Build affiliate link: prefer dp/ASIN/?tag=... else search link with tag
+function buildAffiliateLink({ need, budget, asin }) {
+  const tag = (process.env.AMAZON_TAG || "").trim();
+  // enforce tag presence
+  if (!tag) {
+    throw new Error("AMAZON_TAG is not set. Please set AMAZON_TAG env var to your affiliate tracking id.");
   }
 
-  // Final cleanup
-  need = need.replace(/\s+/g, " ").trim();
-  if (!need) return null;
+  if (asin) {
+    // clean product-level link
+    return `https://www.amazon.in/dp/${asin}/?tag=${encodeURIComponent(tag)}`;
+  }
 
-  return { need, budget };
-}
-
-function escapeRegExp(string) {
-  return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-// Build Amazon search link safely
-function buildAmazonSearchLink(need, budget) {
-  const tag = (process.env.AMAZON_TAG || "").trim();
-  const base = "https://www.amazon.in/s";
-
-  const queryParts = [];
-  if (need) queryParts.push(need.trim());
-  if (budget) queryParts.push(`under ${budget} rupees`);
-
-  const search = queryParts.join(" ");
+  const baseSearch = "https://www.amazon.in/s";
+  const qparts = [];
+  if (need) qparts.push(need.trim());
+  if (budget) qparts.push(`under ${budget} rupees`);
+  const search = qparts.join(" ");
   const params = new URLSearchParams();
   if (search) params.set("k", search);
-  if (tag && tag !== "AMAZON_TAG") params.set("tag", tag); // avoid literal placeholder
-
-  return `${base}?${params.toString()}`;
+  params.set("tag", tag);
+  return `${baseSearch}?${params.toString()}`;
 }
 
-function generateReplyText(need, budget, link) {
-  let budgetText = "aapke budget";
-  if (budget) {
-    // Format with Indian grouping
-    budgetText = `approx ₹${Number(budget).toLocaleString("en-IN")}`;
-  }
+// Build reply with short disclosure
+function buildReplyText(need, budget, affiliateLink) {
+  let budText = "aapke budget";
+  if (budget) budText = `approx ₹${Number(budget).toLocaleString("en-IN")}`;
 
+  const disclosure = "Note: Ye affiliate link hai — agar aap purchase karenge to mujhe commission mil sakta hai.";
   return (
     `Aapki requirement: "${need}"\n` +
-    `Aur budget: ${budgetText} ke hisaab se,\n` +
-    `ye Amazon par best options ke liye search link hai:\n` +
-    `${link}\n\n` +
-    `Is link se aap direct products dekh sakte hain,\n` +
-    `latest price, offer aur reviews real-time check kar sakte hain. 🙂`
+    `Aur budget: ${budText} ke hisaab se,\n` +
+    `Ye Amazon par best options ke liye link hai:\n` +
+    `${affiliateLink}\n\n` +
+    `${disclosure}\n\n` +
+    `Is link se aap direct products dekh sakte hain — latest price, offer aur reviews real-time check kar sakte hain. 🙂`
   );
 }
 
-// --------------- Main bot logic ----------------
+// --------------- Main logic ----------------
 
 async function handleNewComments() {
+  // fetch latest comment threads
   const response = await youtube.commentThreads.list({
     part: ["snippet"],
     videoId: process.env.VIDEO_ID,
@@ -191,7 +202,7 @@ async function handleNewComments() {
       const textOriginal = (topComment.snippet.textDisplay || "").trim();
       const totalReplyCount = snippet.totalReplyCount || 0;
 
-      // skip if already replied
+      // skip already replied threads
       if (totalReplyCount > 0) continue;
 
       const parsed = extractBudgetAndNeed(textOriginal);
@@ -200,16 +211,16 @@ async function handleNewComments() {
         continue;
       }
 
-      const { need, budget } = parsed;
+      const { need, budget, asin } = parsed;
 
-      // Build affiliate link
-      const affiliateLink = buildAmazonSearchLink(need, budget);
+      // build affiliate link (this will throw if AMAZON_TAG not set)
+      const affiliateLink = buildAffiliateLink({ need, budget, asin });
 
-      // Final reply
-      const replyText = generateReplyText(need, budget, affiliateLink);
+      const replyText = buildReplyText(need, budget, affiliateLink);
 
-      console.log("Replying to:", commentId, "need:", need, "budget:", budget);
+      console.log("Replying to:", commentId, "need:", need, "budget:", budget, "link:", affiliateLink);
 
+      // post reply
       await youtube.comments.insert({
         part: ["snippet"],
         requestBody: {
@@ -220,9 +231,11 @@ async function handleNewComments() {
         },
       });
 
+      // push action for response
       actions.push({ commentId, originalComment: textOriginal, need, budget, affiliateLink });
     } catch (err) {
-      console.error("Error processing comment thread item:", err && err.message ? err.message : err);
+      console.error("Error processing comment:", err && err.message ? err.message : err);
+      // continue processing next comments without breaking
       continue;
     }
   }
@@ -230,33 +243,26 @@ async function handleNewComments() {
   return { processedComments: actions.length, replies: actions };
 }
 
-// ---------------- Express endpoints ----------------
+// ---------------- HTTP endpoints ----------------
 
 app.get("/", (req, res) => {
-  res.send("YouTube Auto Reply Bot is running.");
+  res.send("YouTube Auto Reply Bot (affiliate-enforced) is running.");
 });
 
 app.get("/check-comments", async (req, res) => {
   try {
-    // quick sanity checks for environment
-    if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET || !process.env.YT_REFRESH_TOKEN || !process.env.VIDEO_ID) {
-      const missing = [];
-      if (!process.env.GOOGLE_CLIENT_ID) missing.push("GOOGLE_CLIENT_ID");
-      if (!process.env.GOOGLE_CLIENT_SECRET) missing.push("GOOGLE_CLIENT_SECRET");
-      if (!process.env.YT_REFRESH_TOKEN) missing.push("YT_REFRESH_TOKEN");
-      if (!process.env.VIDEO_ID) missing.push("VIDEO_ID");
-      return res.status(500).json({ status: "error", message: "Missing env vars: " + missing.join(", ") });
-    }
-
-    // Warn if AMAZON_TAG unset or placeholder
-    if (!process.env.AMAZON_TAG || process.env.AMAZON_TAG === "AMAZON_TAG") {
-      console.warn("AMAZON_TAG missing or placeholder. Links will be created without tag.");
+    // enforce presence of required envs before processing
+    const stillMissing = REQUIRED_ENVS.filter(k => !process.env[k] || !String(process.env[k]).trim());
+    if (stillMissing.length > 0) {
+      const msg = `Missing required env vars: ${stillMissing.join(", ")}. Set them in Render environment before running.`;
+      console.error(msg);
+      return res.status(500).json({ status: "error", message: msg });
     }
 
     const result = await handleNewComments();
     res.json({ status: "ok", ...result });
   } catch (err) {
-    console.error("Error in /check-comments:", err);
+    console.error("Error in /check-comments:", err && err.message ? err.message : err);
     res.status(500).json({ status: "error", message: err.message || err });
   }
 });
