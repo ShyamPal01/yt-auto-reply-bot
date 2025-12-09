@@ -1,7 +1,5 @@
-require("dotenv").config();
 const express = require("express");
 const { google } = require("googleapis");
-const { URLSearchParams } = require("url");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
