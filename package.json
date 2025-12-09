@@ -1,15 +1,16 @@
 {
   "name": "yt-auto-reply-bot",
   "version": "1.0.0",
-  "description": "YouTube auto comment reply bot",
+  "description": "YouTube auto reply bot with budget + product requirement + Amazon affiliate search link",
   "main": "index.js",
-  "type": "module",
-  "dependencies": {
-    "express": "^5.0.0",
-    "googleapis": "^167.0.0",
-    "dotenv": "^17.2.0"
-  },
   "scripts": {
     "start": "node index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.19.2",
+    "googleapis": "^136.0.0"
   }
 }
