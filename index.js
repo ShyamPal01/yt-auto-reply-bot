@@ -262,60 +262,6 @@ async function handleNewComments() {
   return { processedComments: actions.length, replies: actions };
 }
 
-  const items = response.data.items || [];
-  const actions = [];
-
-  for (const item of items) {
-    try {
-      const snippet = item.snippet;
-      const topComment = snippet.topLevelComment;
-      if (!topComment) continue;
-
-      const commentId = topComment.id;
-      const textOriginal = (topComment.snippet.textDisplay || "").trim();
-      const totalReplyCount = snippet.totalReplyCount || 0;
-
-      // skip already replied threads
-      if (totalReplyCount > 0) continue;
-
-      const parsed = extractBudgetAndNeed(textOriginal);
-      if (!parsed) {
-        console.log("Skip (no budget/need found):", textOriginal);
-        continue;
-      }
-
-      const { need, budget, asin } = parsed;
-
-      // build affiliate link (this will throw if AMAZON_TAG not set)
-      const affiliateLink = buildAffiliateLink({ need, budget, asin });
-
-      const replyText = buildReplyText(need, budget, affiliateLink);
-
-      console.log("Replying to:", commentId, "need:", need, "budget:", budget, "link:", affiliateLink);
-
-      // post reply
-      await youtube.comments.insert({
-        part: ["snippet"],
-        requestBody: {
-          snippet: {
-            parentId: commentId,
-            textOriginal: replyText,
-          },
-        },
-      });
-
-      // push action for response
-      actions.push({ commentId, originalComment: textOriginal, need, budget, affiliateLink });
-    } catch (err) {
-      console.error("Error processing comment:", err && err.message ? err.message : err);
-      // continue processing next comments without breaking
-      continue;
-    }
-  }
-
-  return { processedComments: actions.length, replies: actions };
-}
-
 // ---------------- HTTP endpoints ----------------
 
 app.get("/", (req, res) => {
