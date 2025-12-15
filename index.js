@@ -9,7 +9,7 @@ const { google } = require("googleapis");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const REQUIRED_ENVS = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "YT_REFRESH_TOKEN", "VIDEO_ID", "AMAZON_TAG"];
+const REQUIRED_ENVS = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "YT_REFRESH_TOKEN", "VIDEO_IDS", "AMAZON_TAG"];
 
 // quick env check at startup
 const missingEnvs = REQUIRED_ENVS.filter(k => !process.env[k] || !String(process.env[k]).trim());
@@ -194,13 +194,73 @@ Thank you for your support 🙏`
 // --------------- Main logic ----------------
 
 async function handleNewComments() {
-  // fetch latest comment threads
-  const response = await youtube.commentThreads.list({
-    part: ["snippet"],
-    videoId: process.env.VIDEO_ID,
-    maxResults: 50,
-    order: "time",
-  });
+  const VIDEO_IDS = process.env.VIDEO_IDS.split(",").map(v => v.trim());
+  const actions = [];
+
+  for (const videoId of VIDEO_IDS) {
+    try {
+      const response = await youtube.commentThreads.list({
+        part: ["snippet"],
+        videoId,
+        maxResults: 50,
+        order: "time",
+      });
+
+      const items = response.data.items || [];
+
+      for (const item of items) {
+        try {
+          const snippet = item.snippet;
+          const topComment = snippet.topLevelComment;
+          if (!topComment) continue;
+
+          const commentId = topComment.id;
+          const textOriginal = (topComment.snippet.textDisplay || "").trim();
+          const totalReplyCount = snippet.totalReplyCount || 0;
+
+          // skip already replied threads
+          if (totalReplyCount > 0) continue;
+
+          const parsed = extractBudgetAndNeed(textOriginal);
+          if (!parsed) continue;
+
+          const { need, budget, asin } = parsed;
+
+          const affiliateLink = buildAffiliateLink({ need, budget, asin });
+          const replyText = buildReplyText(need, budget, affiliateLink);
+
+          await youtube.comments.insert({
+            part: ["snippet"],
+            requestBody: {
+              snippet: {
+                parentId: commentId,
+                textOriginal: replyText,
+              },
+            },
+          });
+
+          actions.push({
+            videoId,
+            commentId,
+            need,
+            budget,
+            affiliateLink,
+          });
+
+        } catch (innerErr) {
+          console.error("Comment error:", innerErr.message || innerErr);
+          continue;
+        }
+      }
+
+    } catch (videoErr) {
+      console.error("Video error:", videoId, videoErr.message || videoErr);
+      continue;
+    }
+  }
+
+  return { processedComments: actions.length, replies: actions };
+}
 
   const items = response.data.items || [];
   const actions = [];
