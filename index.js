@@ -35,6 +35,72 @@ const youtube = google.youtube({
 });
 
 // ---------- Helpers ----------
+// ===== TOP-3 KNOWLEDGE BASE =====
+
+const TOP3_LIBRARY = {
+  phone: [
+    { name: "Samsung Galaxy S21 FE", reason: "camera & display" },
+    { name: "OnePlus Nord CE", reason: "smooth performance" },
+    { name: "iQOO Neo", reason: "gaming & speed" }
+  ],
+
+  earphones: [
+    { name: "Realme Buds", reason: "balanced sound" },
+    { name: "Boat Rockerz", reason: "battery backup" },
+    { name: "JBL wired", reason: "sound clarity" }
+  ],
+
+  jacket: [
+    { name: "Puma winter jacket", reason: "fabric quality" },
+    { name: "Allen Solly jacket", reason: "brand trust" },
+    { name: "Roadster jacket", reason: "value for money" }
+  ],
+
+  bottle: [
+    { name: "Milton water bottle", reason: "durability" },
+    { name: "Cello water bottle", reason: "leak proof" },
+    { name: "Borosil water bottle", reason: "material quality" }
+  ]
+};
+
+function detectProductKey(need) {
+  const t = need.toLowerCase();
+  if (t.includes("phone") || t.includes("mobile")) return "phone";
+  if (t.includes("earphone") || t.includes("earbud")) return "earphones";
+  if (t.includes("jacket")) return "jacket";
+  if (t.includes("bottle")) return "bottle";
+  return null;
+}
+
+function amazonSearchLink(query) {
+  const tag = process.env.AMAZON_TAG || "taazalife-21";
+  return `https://www.amazon.in/s?k=${encodeURIComponent(query)}&tag=${tag}`;
+}
+
+function buildTop3Reply(need, budget) {
+  const key = detectProductKey(need);
+  if (!key || !TOP3_LIBRARY[key]) return null;
+
+  const items = TOP3_LIBRARY[key];
+  const budgetText = `₹${Number(budget).toLocaleString("en-IN")}`;
+
+  let reply = `${budgetText} ke budget me ye ${key} reliable hain:\n`;
+
+  items.forEach((item, i) => {
+    const link = amazonSearchLink(`${item.name} under ${budget}`);
+    reply += `${i + 1}️⃣ ${item.name} – ${item.reason}\n${link}\n\n`;
+  });
+
+  reply +=
+`Note:
+Ye Amazon affiliate links hain.
+Aapka price same rehta hai, koi extra charge nahi lagta.
+
+Agar aap apni priority (quality / durability / performance) batayenge
+to mai aur better suggestion de sakta hoon 😊`;
+
+  return reply.trim();
+}
 
 function escapeRegExp(string) {
   return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -226,8 +292,8 @@ async function handleNewComments() {
 
           const { need, budget, asin } = parsed;
 
-          const affiliateLink = buildAffiliateLink({ need, budget, asin });
-          const replyText = buildReplyText(need, budget, affiliateLink);
+const replyText = buildTop3Reply(need, budget);
+if (!replyText) continue;
 
           await youtube.comments.insert({
             part: ["snippet"],
