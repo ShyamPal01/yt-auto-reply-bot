@@ -164,17 +164,30 @@ function buildAffiliateLink({ need, budget, asin }) {
 
 // Build reply with short disclosure
 function buildReplyText(need, budget, affiliateLink) {
-  let budText = "aapke budget";
-  if (budget) budText = `approx ₹${Number(budget).toLocaleString("en-IN")}`;
+  const budgetText = budget
+    ? `₹${Number(budget).toLocaleString("en-IN")}`
+    : "aapke budget ke hisaab se";
 
-  const disclosure = "Note: Ye affiliate link hai — agar aap purchase karenge to mujhe commission mil sakta hai.";
   return (
-    `Aapki requirement: "${need}"\n` +
-    `Aur budget: ${budText} ke hisaab se,\n` +
-    `Ye Amazon par best options ke liye link hai:\n` +
-    `${affiliateLink}\n\n` +
-    `${disclosure}\n\n` +
-    `Is link se aap direct products dekh sakte hain — latest price, offer aur reviews real-time check kar sakte hain. 🙂`
+`Aapki requirement:
+${need}
+
+Aur budget:
+${budgetText}
+
+Product Purchase Link:
+${affiliateLink}
+
+Note:
+Is product link se purchase karne par aapko kisi bhi tarah ka
+koi nuksaan nahi hoga, na hi aapko koi extra charge lagega.
+Aapke discount me bhi koi fark nahi padega.
+Isliye aap bina kisi confusion ke yahan se purchase kar sakte hain.
+
+Agar aapko kisi aur product ki recommendation chahiye
+to comment me apni requirement + budget zaroor likhen 😊
+
+Thank you for your support 🙏`
   );
 }
 
