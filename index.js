@@ -40,35 +40,73 @@ const youtube = google.youtube({
 const TOP3_LIBRARY = {
   phone: [
     { name: "Samsung Galaxy S21 FE", reason: "camera & display" },
-    { name: "OnePlus Nord CE", reason: "smooth performance" },
-    { name: "iQOO Neo", reason: "gaming & speed" }
+    { name: "OnePlus Nord CE 3", reason: "smooth performance" },
+    { name: "iQOO Neo series", reason: "gaming & speed" }
   ],
 
   earphones: [
     { name: "Realme Buds", reason: "balanced sound" },
     { name: "Boat Rockerz", reason: "battery backup" },
-    { name: "JBL wired", reason: "sound clarity" }
+    { name: "JBL Wired", reason: "sound clarity" }
   ],
 
-  jacket: [
-    { name: "Puma winter jacket", reason: "fabric quality" },
-    { name: "Allen Solly jacket", reason: "brand trust" },
-    { name: "Roadster jacket", reason: "value for money" }
+  laptop: [
+    { name: "HP Pavilion", reason: "overall performance" },
+    { name: "Lenovo IdeaPad", reason: "value for money" },
+    { name: "ASUS VivoBook", reason: "lightweight & speed" }
   ],
 
-  bottle: [
-    { name: "Milton water bottle", reason: "durability" },
-    { name: "Cello water bottle", reason: "leak proof" },
-    { name: "Borosil water bottle", reason: "material quality" }
+  clothes: [
+    { name: "Puma jacket", reason: "fabric quality" },
+    { name: "Allen Solly", reason: "brand trust" },
+    { name: "Roadster", reason: "budget friendly" }
+  ],
+
+  home: [
+    { name: "Milton bottle", reason: "durability" },
+    { name: "Cello bottle", reason: "leak proof" },
+    { name: "Borosil", reason: "material quality" }
   ]
 };
 
 function detectProductKey(need) {
   const t = need.toLowerCase();
-  if (t.includes("phone") || t.includes("mobile")) return "phone";
-  if (t.includes("earphone") || t.includes("earbud")) return "earphones";
-  if (t.includes("jacket")) return "jacket";
-  if (t.includes("bottle")) return "bottle";
+
+  // AUDIO FIRST
+  if (
+    t.includes("earphone") ||
+    t.includes("earphones") ||
+    t.includes("earbud") ||
+    t.includes("earbuds") ||
+    t.includes("buds")
+  ) return "earphones";
+
+  // PHONE
+  if (
+    t.includes("smartphone") ||
+    t.includes("mobile phone") ||
+    t.match(/\bphone\b/)
+  ) return "phone";
+
+  // LAPTOP
+  if (t.includes("laptop") || t.includes("notebook")) return "laptop";
+
+  // CLOTHING
+  if (
+    t.includes("jacket") ||
+    t.includes("shirt") ||
+    t.includes("tshirt") ||
+    t.includes("t-shirt") ||
+    t.includes("jeans")
+  ) return "clothes";
+
+  // HOME
+  if (
+    t.includes("bottle") ||
+    t.includes("mixer") ||
+    t.includes("iron")
+  ) return "home";
+
   return null;
 }
 
@@ -84,7 +122,15 @@ function buildTop3Reply(need, budget) {
   const items = TOP3_LIBRARY[key];
   const budgetText = `₹${Number(budget).toLocaleString("en-IN")}`;
 
-  let reply = `${budgetText} ke budget me ye ${key} reliable hain:\n`;
+  const labelMap = {
+  phone: "phones",
+  earphones: "earphones",
+  laptop: "laptops",
+  clothes: "clothes",
+  home: "products"
+};
+
+let reply = `${budgetText} ke budget me ye ${labelMap[key] || "products"} reliable hain 👇\n\n`;
 
   items.forEach((item, i) => {
     const link = amazonSearchLink(`${item.name} under ${budget}`);
@@ -287,13 +333,98 @@ async function handleNewComments() {
           // skip already replied threads
           if (totalReplyCount > 0) continue;
 
-          const parsed = extractBudgetAndNeed(textOriginal);
-          if (!parsed) continue;
+const parsed = extractBudgetAndNeed(textOriginal);
 
-          const { need, budget, asin } = parsed;
+// 🔹 CASE 1: User ne sirf "best product", "recommend karo"
+if (!parsed) {
+  const generalHelpReply =
+`Bilkul 👍
+Main aapki help karna chahta hoon 😊
 
-const replyText = buildTop3Reply(need, budget);
-if (!replyText) continue;
+Bas itna bata dijiye:
+• Kis type ka product chahiye (phone, earphones, laptop, clothes etc.)
+• Aur approx budget kya hai
+
+Jaise hi aap batayenge,
+main aapke budget ke hisaab se best options suggest kar dunga 👌`;
+
+  await youtube.comments.insert({
+    part: ["snippet"],
+    requestBody: {
+      snippet: {
+        parentId: commentId,
+        textOriginal: generalHelpReply,
+      },
+    },
+  });
+
+  continue;
+}
+
+// ✅ YAHAN parsed se values nikalo (VERY IMPORTANT)
+const { need, budget, asin } = parsed;
+
+// 🔹 CASE 2: Product clear nahi hai
+if (!detectProductKey(need)) {
+  const clarifyReply =
+`Aap kis type ka product chahte hain? 😊
+
+Jaise:
+• Phone
+• Laptop
+• Earphones
+• Clothes
+• Home products
+
+Aur apna budget bhi bata dijiyega,
+taaki mai aapko best options recommend kar saku 👍`;
+
+  await youtube.comments.insert({
+    part: ["snippet"],
+    requestBody: {
+      snippet: {
+        parentId: commentId,
+        textOriginal: clarifyReply,
+      },
+    },
+  });
+
+  continue;
+}
+
+// 🟡 CASE 3: Product clear hai but budget missing
+if (!budget) {
+  const askBudgetReply =
+`Aap kis budget range me product lena chahte hain? 😊
+
+Jaise:
+• ₹5,000 – ₹10,000
+• ₹10,000 – ₹15,000
+• ₹20,000 ke around
+
+Budget batayenge to mai aapko
+best quality ke options recommend kar sakunga 👍`;
+
+  await youtube.comments.insert({
+    part: ["snippet"],
+    requestBody: {
+      snippet: {
+        parentId: commentId,
+        textOriginal: askBudgetReply,
+      },
+    },
+  });
+
+  continue;
+}
+
+let replyText = buildTop3Reply(need, budget);
+
+// fallback: agar Top-3 na mile to normal affiliate reply bhejo
+if (!replyText) {
+  const fallbackLink = buildAffiliateLink({ need, budget });
+  replyText = buildReplyText(need, budget, fallbackLink);
+}
 
           await youtube.comments.insert({
             part: ["snippet"],
@@ -304,14 +435,12 @@ if (!replyText) continue;
               },
             },
           });
-
-          actions.push({
-            videoId,
-            commentId,
-            need,
-            budget,
-            affiliateLink,
-          });
+actions.push({
+  videoId,
+  commentId,
+  need,
+  budget,
+});
 
         } catch (innerErr) {
           console.error("Comment error:", innerErr.message || innerErr);
