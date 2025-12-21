@@ -220,13 +220,15 @@ function extractBudgetAndNeed(originalText) {
     // remove the matched number phrase to form need
     const re = new RegExp(escapeRegExp(rawMatch), "i");
     let need = originalText.replace(re, "").trim();
-    need = need
-      .replace(/\bke\s*under\b/gi, "")
-      .replace(/\bunder\b/gi, "")
-      .replace(/\bplease\b/gi, "")
-      .replace(/\bbata\s+do\b/gi, "")
-      .replace(/\bpl\b/gi, "")
-      .trim();
+
+      need = need
+  .replace(/\bke\s*under\b/gi, "")
+  .replace(/\bunder\b/gi, "")
+  .replace(/\bplease\b/gi, "")
+  .replace(/\bbata\s+do\b/gi, "")
+  .replace(/\bbatao\b/gi, "")
+  .replace(/\bpl\b/gi, "")
+  .trim();
 
     // if too short, try window capture
     if (!need || need.length < 2) {
@@ -331,7 +333,7 @@ async function handleNewComments() {
           const totalReplyCount = snippet.totalReplyCount || 0;
 
           // skip already replied threads
-          if (totalReplyCount > 0) continue;
+         // if (totalReplyCount > 0) continue;
 
 const parsed = extractBudgetAndNeed(textOriginal);
 
